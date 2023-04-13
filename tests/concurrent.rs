@@ -1,12 +1,13 @@
 #[cfg(feature = "concurrent")]
-use tucan::{concurrent_gc, AInterned, ConcurrentIntern};
-
-#[cfg(feature = "concurrent")]
 #[test]
-pub fn test_interner() {
-    let a = "hello".intern();
-    let b = "hello".intern();
-    let c = "world".intern();
+pub fn test_concurrent_str() {
+    use tucan::concurrent::{Tucan, ConcurrentIntern, AInterned};
+
+    let interner = Tucan::<str>::new();
+
+    let a = "hello".intern(&interner);
+    let b = "hello".intern(&interner);
+    let c = "world".intern(&interner);
 
     assert_eq!(a, b);
     assert_ne!(a, c);
@@ -16,9 +17,9 @@ pub fn test_interner() {
     assert_eq!(b, "hello");
     assert_eq!(c, "world");
 
-    assert_eq!(a, "hello".intern());
-    assert_eq!(b, "hello".intern());
-    assert_eq!(c, "world".intern());
+    assert_eq!(a, "hello".intern(&interner));
+    assert_eq!(b, "hello".intern(&interner));
+    assert_eq!(c, "world".intern(&interner));
 
     assert_eq!(AInterned::strong_count(&a), 3);
     assert_eq!(AInterned::strong_count(&b), 3);
@@ -48,9 +49,9 @@ pub fn test_interner() {
     drop(b);
     drop(c);
 
-    assert_eq!(tucan::concurrent_len(), 2);
+    assert_eq!(interner.len(), 2);
 
-    concurrent_gc();
+    interner.gc();
 
-    assert_eq!(tucan::concurrent_len(), 0);
+    assert_eq!(interner.len(), 0);
 }

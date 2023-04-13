@@ -1,13 +1,9 @@
 use std::{
-    any::{Any, TypeId},
-    cell::RefCell,
-    collections::HashMap,
     fmt::Debug,
     hash::{BuildHasherDefault, Hash},
-    marker::PhantomData,
     ops::Deref,
     ptr::addr_of,
-    rc::Rc,
+    rc::Rc, collections::HashMap, cell::RefCell,
 };
 
 use siphasher::sip128::{Hasher128, SipHasher13};
@@ -15,30 +11,40 @@ use twox_hash::XxHash64;
 
 type Map<K, V> = HashMap<K, V, BuildHasherDefault<XxHash64>>;
 
-thread_local! {
-    static TUCAN: Tucan = Tucan::new();
-}
-
 /// A unique ID for a value within the interner.
-#[derive(Clone)]
-pub struct Interned<T: Intern>(Rc<dyn Any>, PhantomData<T>);
+pub struct Interned<T: Hash + ?Sized>(Rc<T>);
 
-pub trait Intern: Any + Hash + Sized {
-    fn intern(self) -> Interned<Self>;
+pub trait Intern<T: Hash + ?Sized = Self>: Hash {
+    fn intern(self, interner: &Tucan<T>) -> Interned<T>;
 }
 
-impl<T> Intern for T
+impl Intern<str> for &str {
+    fn intern(self, interner: &Tucan<str>) -> Interned<str> {
+        interner.intern_str(self)
+    }
+}
+
+default impl<T> Intern for T
 where
-    T: Any + Hash + Sized,
+    T: Hash + Sized,
 {
-    fn intern(self) -> Interned<Self> {
-        intern(self)
+    fn intern(self, interner: &Tucan<Self>) -> Interned<Self> {
+        interner.intern(self)
+    }
+}
+
+impl<T> Clone for Interned<T>
+where
+    T: Hash + ?Sized,
+{
+    fn clone(&self) -> Self {
+        Self(Rc::clone(&self.0))
     }
 }
 
 impl<T> Hash for Interned<T>
 where
-    T: Intern + Hash,
+    T: Hash + ?Sized,
 {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.as_ref().hash(state);
@@ -47,7 +53,7 @@ where
 
 impl<T> Interned<T>
 where
-    T: Intern,
+    T: Hash + ?Sized,
 {
     /// Returns the number of strong references to this value.
     #[inline]
@@ -59,7 +65,7 @@ where
 
 impl<T> Debug for Interned<T>
 where
-    T: Intern + Debug,
+    T: Hash + ?Sized + Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("Interned").field(&self.as_ref()).finish()
@@ -68,23 +74,16 @@ where
 
 impl<T> AsRef<T> for Interned<T>
 where
-    T: Intern,
+    T: Hash + ?Sized,
 {
     fn as_ref(&self) -> &T {
-        if cfg!(debug_assertions) {
-            self.0
-                .downcast_ref()
-                .unwrap_or_else(|| unreachable!("wrong type in dyn Any"))
-        } else {
-            // SAFETY: we know that the `Arc<dyn Any>` is actually an `Arc<T>`.
-            unsafe { &*addr_of!(self.0).cast::<T>() }
-        }
+        &self.0
     }
 }
 
 impl<T> Deref for Interned<T>
 where
-    T: Intern,
+    T: Hash + ?Sized,
 {
     type Target = T;
 
@@ -95,7 +94,7 @@ where
 
 impl<T> PartialEq for Interned<T>
 where
-    T: Intern,
+    T: Hash + ?Sized,
 {
     #[allow(clippy::ptr_eq /* false positive; suggestion loop with vtable_address_comparisons */)]
     fn eq(&self, other: &Self) -> bool {
@@ -103,116 +102,139 @@ where
     }
 }
 
-impl<T> Eq for Interned<T> where T: Intern + Eq {}
-
 impl<T> PartialEq<T> for Interned<T>
 where
-    T: Intern + PartialEq,
+    T: Hash + ?Sized + PartialEq,
 {
     fn eq(&self, other: &T) -> bool {
         self.as_ref() == other
     }
 }
 
+impl PartialEq<&str> for Interned<str>
+{
+    fn eq(&self, other: &&str) -> bool {
+        self.as_ref() == *other
+    }
+}
+
+impl<T: Hash + Sized + PartialEq> PartialEq<&[T]> for Interned<[T]>
+{
+    fn eq(&self, other: &&[T]) -> bool {
+        self.as_ref() == *other
+    }
+}
+
 impl<T> PartialOrd for Interned<T>
 where
-    T: Intern + PartialOrd,
+    T: Hash + ?Sized + PartialOrd,
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         self.as_ref().partial_cmp(other.as_ref())
     }
 }
 
-impl<T> Ord for Interned<T>
-where
-    T: Intern + Ord,
-{
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.as_ref().cmp(other.as_ref())
-    }
-}
-
 impl<T> PartialOrd<T> for Interned<T>
 where
-    T: Intern + PartialOrd,
+    T: Hash + ?Sized + PartialOrd,
 {
     fn partial_cmp(&self, other: &T) -> Option<std::cmp::Ordering> {
         self.as_ref().partial_cmp(other)
     }
 }
 
-struct Tucan(RefCell<Map<(TypeId, u128), Rc<dyn Any>>>);
+pub struct Tucan<T: Hash + ?Sized>(RefCell<Map<u128, Rc<T>>>);
 
-impl Tucan {
+impl<T: Hash + ?Sized> Default for Tucan<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Hash + ?Sized> Tucan<T> {
     /// Creates a new interner.
-    fn new() -> Self {
+    #[must_use]
+    pub fn new() -> Self {
         Self(RefCell::new(Map::default()))
     }
 
     /// Cleans up the values that are interned but no longer referenced.
-    #[inline]
-    fn gc(&self) {
-        self.0
-            .borrow_mut()
-            .retain(|_, item| Rc::strong_count(item) > 1);
+    pub fn gc(&self) {
+        self.0.borrow_mut().retain(|_, item| Rc::strong_count(item) > 1);
     }
 
     /// Clears the interner but does not free the memory.
-    #[inline]
-    fn clear(&self) {
+    pub fn clear(&self) {
         self.0.borrow_mut().clear();
     }
 
     /// Returns the number of values interned.
-    #[inline]
     #[must_use]
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.0.borrow().len()
     }
 
-    /// Interns a value.
+    /// Returns `true` if the interner is empty.
     #[must_use]
-    fn intern<T>(&self, value: T) -> Interned<T>
+    pub fn is_empty(&self) -> bool {
+        self.0.borrow().is_empty()
+    }
+
+    /// Interns a value.
+    pub fn intern(&self, value: T) -> Interned<T>
     where
-        T: Intern,
+        T: Sized,
     {
-        let type_id = TypeId::of::<T>();
         let hash = hash128(&value);
 
         let borrow = self.0.borrow();
-        if let Some(item) = borrow.get(&(type_id, hash)) {
-            Interned(Rc::clone(item), PhantomData::<T>)
+        if let Some(item) = borrow.get(&hash) {
+            Interned(Rc::clone(item))
         } else {
             drop(borrow);
-            let ptr: Rc<dyn Any> = Rc::new(value);
-            self.0.borrow_mut().insert((type_id, hash), Rc::clone(&ptr));
-            Interned(ptr, PhantomData)
+
+            let ptr: Rc<T> = Rc::new(value);
+            self.0.borrow_mut().insert(hash, Rc::clone(&ptr));
+            Interned(ptr)
         }
     }
 }
 
-/// Cleans up the values that are interned but no longer referenced.
-pub fn gc() {
-    TUCAN.with(Tucan::gc);
+impl Tucan<str> {
+    /// Interns a string.
+    #[must_use]
+    pub fn intern_str(&self, value: &str) -> Interned<str> {
+        let hash = hash128(&value);
+
+        let borrow = self.0.borrow();
+        if let Some(item) = borrow.get(&hash) {
+            Interned(Rc::clone(item))
+        } else {
+            drop(borrow);
+
+            let ptr: Rc<str> = Rc::from(value);
+            self.0.borrow_mut().insert(hash, Rc::clone(&ptr));
+            Interned(ptr)
+        }
+    }
 }
 
-/// Clears the interner but does not free the memory.
-pub fn clear() {
-    TUCAN.with(Tucan::clear);
-}
+impl<T: Sized + Hash + Clone> Tucan<[T]> {
+    /// Interns a slice.
+    pub fn intern_slice(&self, value: &[T]) -> Interned<[T]> {
+        let hash = hash128(&value);
 
-/// Returns the number of values interned.
-#[must_use]
-pub fn len() -> usize {
-    TUCAN.with(Tucan::len)
-}
+        let borrow = self.0.borrow();
+        if let Some(item) = borrow.get(&hash) {
+            Interned(Rc::clone(item))
+        } else {
+            drop(borrow);
 
-/// Interns a value.
-pub fn intern<T>(value: T) -> Interned<T>
-where
-    T: Intern,
-{
-    TUCAN.with(|tucan| tucan.intern(value))
+            let ptr: Rc<[T]> = Rc::<[T]>::from(value);
+            self.0.borrow_mut().insert(hash, Rc::clone(&ptr));
+            Interned(ptr)
+        }
+    }
 }
 
 fn hash128<T: Hash>(value: &T) -> u128 {

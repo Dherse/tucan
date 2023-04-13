@@ -14,13 +14,11 @@
     unused_qualifications
 )]
 #![warn(clippy::pedantic)]
-#![allow(clippy::module_name_repetitions)]
+#![allow(incomplete_features, clippy::module_name_repetitions)]
+#![feature(specialization)]
 
 #[cfg(feature = "concurrent")]
-mod concurrent;
+pub mod concurrent;
 mod singlethread;
-
-#[cfg(feature = "concurrent")]
-pub use crate::concurrent::*;
 
 pub use crate::singlethread::*;
