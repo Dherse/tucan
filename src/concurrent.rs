@@ -1,0 +1,190 @@
+use std::{
+    any::{Any, TypeId},
+    fmt::Debug,
+    hash::{BuildHasherDefault, Hash},
+    marker::PhantomData,
+    ops::Deref,
+    ptr::addr_of,
+    sync::Arc,
+};
+
+use dashmap::DashMap;
+use once_cell::sync::Lazy;
+use siphasher::sip128::{Hasher128, SipHasher13};
+use twox_hash::XxHash64;
+
+type Map<K, V> = DashMap<K, V, BuildHasherDefault<XxHash64>>;
+
+static TUCAN: Lazy<Tucan> = Lazy::new(Tucan::new);
+
+/// A unique ID for a value within the interner.
+#[derive(Clone)]
+pub struct AInterned<T: ConcurrentIntern>(Arc<dyn Any + Send + Sync>, PhantomData<T>);
+
+pub trait ConcurrentIntern: Any + Hash + Send + Sync + Sized {
+    fn intern(self) -> AInterned<Self>;
+}
+
+impl<T> ConcurrentIntern for T
+where
+    T: Any + Hash + Send + Sync + Sized,
+{
+    fn intern(self) -> AInterned<Self> {
+        concurrent_intern(self)
+    }
+}
+
+impl<T> Hash for AInterned<T>
+where
+    T: ConcurrentIntern + Hash,
+{
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.as_ref().hash(state);
+    }
+}
+
+impl<T> AInterned<T>
+where
+    T: ConcurrentIntern,
+{
+    /// Returns the number of strong references to this value.
+    #[inline]
+    #[must_use]
+    pub fn strong_count(this: &Self) -> usize {
+        Arc::strong_count(&this.0)
+    }
+}
+
+impl<T> Debug for AInterned<T>
+where
+    T: ConcurrentIntern + Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Interned").field(&self.as_ref()).finish()
+    }
+}
+
+impl<T> AsRef<T> for AInterned<T>
+where
+    T: ConcurrentIntern,
+{
+    fn as_ref(&self) -> &T {
+        if cfg!(debug_assertions) {
+            self.0
+                .downcast_ref()
+                .unwrap_or_else(|| unreachable!("wrong type in dyn Any"))
+        } else {
+            // SAFETY: we know that the `Arc<dyn Any>` is actually an `Arc<T>`.
+            unsafe { &*addr_of!(self.0).cast::<T>() }
+        }
+    }
+}
+
+impl<T> Deref for AInterned<T>
+where
+    T: ConcurrentIntern,
+{
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_ref()
+    }
+}
+
+impl<T> PartialEq for AInterned<T>
+where
+    T: ConcurrentIntern,
+{
+    #[allow(clippy::ptr_eq /* false positive; suggestion loop with vtable_address_comparisons */)]
+    fn eq(&self, other: &Self) -> bool {
+        addr_of!(*self.0).cast::<()>() == addr_of!(*other.0).cast::<()>()
+    }
+}
+
+impl<T> PartialEq<T> for AInterned<T>
+where
+    T: ConcurrentIntern + PartialEq,
+{
+    fn eq(&self, other: &T) -> bool {
+        self.as_ref() == other
+    }
+}
+
+impl<T> PartialOrd for AInterned<T>
+where
+    T: ConcurrentIntern + PartialOrd,
+{
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.as_ref().partial_cmp(other.as_ref())
+    }
+}
+
+impl<T> PartialOrd<T> for AInterned<T>
+where
+    T: ConcurrentIntern + PartialOrd,
+{
+    fn partial_cmp(&self, other: &T) -> Option<std::cmp::Ordering> {
+        self.as_ref().partial_cmp(other)
+    }
+}
+
+struct Tucan(Map<(TypeId, u128), Arc<dyn Any + Send + Sync>>);
+
+impl Tucan {
+    /// Creates a new interner.
+    fn new() -> Self {
+        Self(Map::default())
+    }
+
+    /// Cleans up the values that are interned but no longer referenced.
+    fn gc(&self) {
+        self.0.retain(|_, item| Arc::strong_count(item) > 1);
+    }
+
+    /// Interns a value.
+    fn intern<T>(&self, value: T) -> AInterned<T>
+    where
+        T: ConcurrentIntern,
+    {
+        let type_id = TypeId::of::<T>();
+        let hash = hash128(&value);
+
+        if let Some(item) = self.0.get(&(type_id, hash)) {
+            AInterned(Arc::clone(item.value()), PhantomData::<T>)
+        } else {
+            let ptr: Arc<dyn Any + Send + Sync> = Arc::new(value);
+            self.0.insert((type_id, hash), Arc::clone(&ptr));
+            AInterned(ptr, PhantomData)
+        }
+    }
+}
+
+/// Cleans up the values that are interned but no longer referenced.
+pub fn concurrent_gc() {
+    TUCAN.gc();
+}
+
+/// Clears the interner but does not free the memory.
+pub fn concurrent_clear() {
+    TUCAN.0.clear();
+}
+
+/// Returns the number of values interned.
+#[must_use]
+pub fn concurrent_len() -> usize {
+    TUCAN.0.len()
+}
+
+/// Interns a value.
+pub fn concurrent_intern<T>(value: T) -> AInterned<T>
+where
+    T: ConcurrentIntern,
+{
+    TUCAN.intern(value)
+}
+
+fn hash128<T: Hash>(value: &T) -> u128 {
+    let mut hasher = SipHasher13::new();
+    value.hash(&mut hasher);
+    hasher.finish128().as_u128()
+}
