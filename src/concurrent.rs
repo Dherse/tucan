@@ -75,7 +75,7 @@ where
                 .unwrap_or_else(|| unreachable!("wrong type in dyn Any"))
         } else {
             // SAFETY: we know that the `Arc<dyn Any>` is actually an `Arc<T>`.
-            unsafe { &*addr_of!(self.0).cast::<T>() }
+            unsafe { &*addr_of!(*self.0).cast::<T>() }
         }
     }
 }
