@@ -1,4 +1,4 @@
-use tucan::{gc, Intern};
+use tucan::{gc, Intern, Interned};
 
 #[test]
 pub fn test_interner() {
@@ -18,30 +18,30 @@ pub fn test_interner() {
     assert_eq!(b, "hello".intern());
     assert_eq!(c, "world".intern());
 
-    assert_eq!(a.strong_count(), 3);
-    assert_eq!(b.strong_count(), 3);
-    assert_eq!(c.strong_count(), 2);
+    assert_eq!(Interned::strong_count(&a), 3);
+    assert_eq!(Interned::strong_count(&b), 3);
+    assert_eq!(Interned::strong_count(&c), 2);
 
     let aa = a.clone();
     let bb = b.clone();
     let cb = c.clone();
 
-    assert_eq!(a.strong_count(), 5);
-    assert_eq!(b.strong_count(), 5);
-    assert_eq!(c.strong_count(), 3);
+    assert_eq!(Interned::strong_count(&a), 5);
+    assert_eq!(Interned::strong_count(&b), 5);
+    assert_eq!(Interned::strong_count(&c), 3);
 
     drop(aa);
     drop(bb);
     drop(cb);
 
-    assert_eq!(a.strong_count(), 3);
-    assert_eq!(b.strong_count(), 3);
-    assert_eq!(c.strong_count(), 2);
+    assert_eq!(Interned::strong_count(&a), 3);
+    assert_eq!(Interned::strong_count(&b), 3);
+    assert_eq!(Interned::strong_count(&c), 2);
 
     drop(a);
 
-    assert_eq!(b.strong_count(), 2);
-    assert_eq!(c.strong_count(), 2);
+    assert_eq!(Interned::strong_count(&b), 2);
+    assert_eq!(Interned::strong_count(&c), 2);
 
     drop(b);
     drop(c);
