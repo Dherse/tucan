@@ -89,7 +89,7 @@ where
 
 impl<T> PartialEq<T> for Interned<T>
 where
-    T: Intern,
+    T: Intern + PartialEq,
 {
     fn eq(&self, other: &T) -> bool {
         self.as_ref() == other
@@ -114,13 +114,13 @@ where
     }
 }
 
-pub trait Intern: Any + Hash + PartialEq + Send + Sync + Sized {
+pub trait Intern: Any + Hash + Send + Sync + Sized {
     fn intern(self) -> Interned<Self>;
 }
 
 impl<T> Intern for T
 where
-    T: Any + Hash + PartialEq + Send + Sync + Sized,
+    T: Any + Hash + Send + Sync + Sized,
 {
     fn intern(self) -> Interned<Self> {
         intern(self)

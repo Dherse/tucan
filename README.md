@@ -1,0 +1,3 @@
+# Tucan: a simple interner with garbage collection
+
+Tucan is a very basic interner with garbage collection. It adds an `Intern` trait that allows you to intern any type that implements `Hash`, `Send`, `Sync` and `Eq`. Keys to interned elements are called `Interned` and are wrapper around a `Arc<T>`. They implement `Deref` for `T` and `Clone`. When calling the `gc()` function, tucan looks for all entries in the interner that are not referenced by any `Interned` and removes them.
