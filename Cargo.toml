@@ -6,7 +6,7 @@ license = "The Unlicense"
 description = "A simple, fast, and multithreaded interner with loose type requirement."
 repository = "https://github.com/Dherse/tucan/tree/main"
 authors = [ "Sébastien d'Herbais de Thun (Dherse) <sebastien.d.herbais@gmail.com>" ]
-keywords = ["interner", "intern", "string", "str", "symbol", "arc", "send", "sync", "concurrent" ]
+keywords = ["interner", "intern", "string", "str", "concurrent" ]
 categories = ["data-structures", "concurrency"]
 
 [dependencies]
