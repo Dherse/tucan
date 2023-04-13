@@ -1,4 +1,19 @@
-#![feature(downcast_unchecked)]
+#![deny(
+    absolute_paths_not_starting_with_crate,
+    keyword_idents,
+    macro_use_extern_crate,
+    meta_variable_misuse,
+    missing_abi,
+    missing_copy_implementations,
+    non_ascii_idents,
+    nonstandard_style,
+    noop_method_call,
+    pointer_structural_match,
+    private_in_public,
+    rust_2018_idioms,
+    unused_qualifications
+)]
+#![warn(clippy::pedantic)]
 
 use std::{
     any::{Any, TypeId},
@@ -7,27 +22,35 @@ use std::{
     hash::{BuildHasherDefault, Hash},
     marker::PhantomData,
     ops::Deref,
+    ptr::addr_of,
     sync::Arc,
 };
 
+use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use siphasher::sip128::{Hasher128, SipHasher13};
 use twox_hash::XxHash64;
 
 type Map<K, V> = HashMap<K, V, BuildHasherDefault<XxHash64>>;
 
-lazy_static::lazy_static! {
-    static ref TUCAN: Tucan = Tucan::new();
-}
+static TUCAN: Lazy<Tucan> = Lazy::new(Tucan::new);
 
 /// A unique ID for a value within the interner.
-///
-///
 #[derive(Clone)]
-pub struct Interned<T: Intern>(Arc<dyn Any>, PhantomData<T>);
+pub struct Interned<T: Intern>(Arc<dyn Any + Send + Sync>, PhantomData<T>);
 
-unsafe impl<T> Send for Interned<T> where T: Intern {}
-unsafe impl<T> Sync for Interned<T> where T: Intern {}
+pub trait Intern: Any + Hash + Send + Sync + Sized {
+    fn intern(self) -> Interned<Self>;
+}
+
+impl<T> Intern for T
+where
+    T: Any + Hash + Send + Sync + Sized,
+{
+    fn intern(self) -> Interned<Self> {
+        intern(self)
+    }
+}
 
 impl<T> Hash for Interned<T>
 where
@@ -43,8 +66,10 @@ where
     T: Intern,
 {
     /// Returns the number of strong references to this value.
-    pub fn strong_count(&self) -> usize {
-        Arc::strong_count(&self.0)
+    #[inline]
+    #[must_use]
+    pub fn strong_count(this: &Self) -> usize {
+        Arc::strong_count(&this.0)
     }
 }
 
@@ -62,8 +87,14 @@ where
     T: Intern,
 {
     fn as_ref(&self) -> &T {
-        // Safety: we know that the `Arc<dyn Any>` is actually an `Arc<T>`.
-        unsafe { self.0.downcast_ref_unchecked::<T>() }
+        if cfg!(debug_assertions) {
+            self.0
+                .downcast_ref()
+                .unwrap_or_else(|| unreachable!("wrong type in dyn Any"))
+        } else {
+            // SAFETY: we know that the `Arc<dyn Any>` is actually an `Arc<T>`.
+            unsafe { &*addr_of!(self.0).cast::<T>() }
+        }
     }
 }
 
@@ -82,8 +113,9 @@ impl<T> PartialEq for Interned<T>
 where
     T: Intern,
 {
+    #[allow(clippy::ptr_eq /* false positive; suggestion loop with vtable_address_comparisons */)]
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
+        addr_of!(*self.0).cast::<()>() == addr_of!(*other.0).cast::<()>()
     }
 }
 
@@ -114,23 +146,7 @@ where
     }
 }
 
-pub trait Intern: Any + Hash + Send + Sync + Sized {
-    fn intern(self) -> Interned<Self>;
-}
-
-impl<T> Intern for T
-where
-    T: Any + Hash + Send + Sync + Sized,
-{
-    fn intern(self) -> Interned<Self> {
-        intern(self)
-    }
-}
-
-struct Tucan(RwLock<Map<(TypeId, u128), Arc<dyn Any>>>);
-
-unsafe impl Sync for Tucan {}
-unsafe impl Send for Tucan {}
+struct Tucan(RwLock<Map<(TypeId, u128), Arc<dyn Any + Send + Sync>>>);
 
 impl Tucan {
     /// Creates a new interner.
@@ -153,13 +169,13 @@ impl Tucan {
         let hash = hash128(&value);
 
         let mut map = self.0.write();
-        let Some(item) = map.get(&(type_id, hash)) else {
-            let ptr: Arc<dyn Any> = Arc::new(value);
+        if let Some(item) = map.get(&(type_id, hash)) {
+            Interned(Arc::clone(item), PhantomData::<T>)
+        } else {
+            let ptr: Arc<dyn Any + Send + Sync> = Arc::new(value);
             map.insert((type_id, hash), Arc::clone(&ptr));
-            return Interned(ptr, PhantomData);
-        };
-
-        Interned(Arc::clone(item), PhantomData)
+            Interned(ptr, PhantomData)
+        }
     }
 }
 
@@ -168,8 +184,7 @@ pub fn gc() {
     TUCAN.gc();
 }
 
-/// Clears the interner.
-/// Does not free the memory.
+/// Clears the interner but does not free the memory.
 pub fn clear() {
     let mut map = TUCAN.0.write();
     map.clear();
