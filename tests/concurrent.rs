@@ -1,5 +1,7 @@
+#[cfg(feature = "concurrent")]
 use tucan::{concurrent_gc, AInterned, ConcurrentIntern};
 
+#[cfg(feature = "concurrent")]
 #[test]
 pub fn test_interner() {
     let a = "hello".intern();
