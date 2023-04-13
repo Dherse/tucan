@@ -9,7 +9,7 @@ keywords = ["interner", "intern", "string", "str", "concurrent"]
 license = "0BSD"
 name = "tucan"
 repository = "https://github.com/Dherse/tucan/tree/main"
-version = "0.1.3"
+version = "0.1.4"
 
 [features]
 default = [ ]
