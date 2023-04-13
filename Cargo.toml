@@ -1,16 +1,18 @@
 [package]
-name = "tucan"
-version = "0.1.0"
-edition = "2021"
-license = "Unlicense"
-description = "A simple, fast, and multithreaded interner with loose type requirement."
-repository = "https://github.com/Dherse/tucan/tree/main"
-authors = [ "Sébastien d'Herbais de Thun (Dherse) <sebastien.d.herbais@gmail.com>" ]
-keywords = ["interner", "intern", "string", "str", "concurrent" ]
+authors = [
+	"Sébastien d'Herbais de Thun (Dherse) <sebastien.d.herbais@gmail.com>",
+]
 categories = ["data-structures", "concurrency"]
+description = "A simple, fast, and multithreaded interner with loose type requirement."
+edition = "2021"
+keywords = ["interner", "intern", "string", "str", "concurrent"]
+license = "0BSD"
+name = "tucan"
+repository = "https://github.com/Dherse/tucan/tree/main"
+version = "0.1.0"
 
 [dependencies]
-lazy_static = "1.4.0"
-parking_lot = "0.12.1"
-siphasher = "0.3.10"
-twox-hash = "1.6.3"
+once_cell = "1"
+parking_lot = "0.12"
+siphasher = "0.3"
+twox-hash = "1"
