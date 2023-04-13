@@ -17,7 +17,6 @@
 
 use std::{
     any::{Any, TypeId},
-    collections::HashMap,
     fmt::Debug,
     hash::{BuildHasherDefault, Hash},
     marker::PhantomData,
@@ -26,12 +25,12 @@ use std::{
     sync::Arc,
 };
 
+use dashmap::DashMap;
 use once_cell::sync::Lazy;
-use parking_lot::RwLock;
 use siphasher::sip128::{Hasher128, SipHasher13};
 use twox_hash::XxHash64;
 
-type Map<K, V> = HashMap<K, V, BuildHasherDefault<XxHash64>>;
+type Map<K, V> = DashMap<K, V, BuildHasherDefault<XxHash64>>;
 
 static TUCAN: Lazy<Tucan> = Lazy::new(Tucan::new);
 
@@ -146,18 +145,17 @@ where
     }
 }
 
-struct Tucan(RwLock<Map<(TypeId, u128), Arc<dyn Any + Send + Sync>>>);
+struct Tucan(Map<(TypeId, u128), Arc<dyn Any + Send + Sync>>);
 
 impl Tucan {
     /// Creates a new interner.
     fn new() -> Self {
-        Self(RwLock::new(HashMap::default()))
+        Self(Map::default())
     }
 
     /// Cleans up the values that are interned but no longer referenced.
     fn gc(&self) {
-        let mut map = self.0.write();
-        map.retain(|_, item| Arc::strong_count(item) > 1);
+        self.0.retain(|_, item| Arc::strong_count(item) > 1);
     }
 
     /// Interns a value.
@@ -168,12 +166,11 @@ impl Tucan {
         let type_id = TypeId::of::<T>();
         let hash = hash128(&value);
 
-        let mut map = self.0.write();
-        if let Some(item) = map.get(&(type_id, hash)) {
-            Interned(Arc::clone(item), PhantomData::<T>)
+        if let Some(item) = self.0.get(&(type_id, hash)) {
+            Interned(Arc::clone(item.value()), PhantomData::<T>)
         } else {
             let ptr: Arc<dyn Any + Send + Sync> = Arc::new(value);
-            map.insert((type_id, hash), Arc::clone(&ptr));
+            self.0.insert((type_id, hash), Arc::clone(&ptr));
             Interned(ptr, PhantomData)
         }
     }
@@ -186,14 +183,13 @@ pub fn gc() {
 
 /// Clears the interner but does not free the memory.
 pub fn clear() {
-    let mut map = TUCAN.0.write();
-    map.clear();
+    TUCAN.0.clear();
 }
 
 /// Returns the number of values interned.
+#[must_use]
 pub fn len() -> usize {
-    let map = TUCAN.0.read();
-    map.len()
+    TUCAN.0.len()
 }
 
 /// Interns a value.
